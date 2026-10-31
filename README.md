@@ -11,8 +11,8 @@ Networking and mDNS/Bonjour discovery use **only the Python standard library**.
 The local MIDI output uses [`mido`](https://mido.readthedocs.io/) /
 `python-rtmidi`. Any device that speaks AppleMIDI should work; it is built for
 and verified against **[Faderling](https://github.com/duddex/faderling)**, the
-Android tablet controller that sends MIDI over AppleMIDI and advertises via
-Bonjour.
+Android app that turns phones and tablets into MIDI controllers and sends over
+AppleMIDI, advertising itself via Bonjour.
 
 ## Install
 
@@ -168,9 +168,9 @@ documents Apple's session protocol), and the
 
 ## Verified against
 
-Tested end to end against real Faderling tablets on a Wi-Fi LAN (TB305FU,
-KFAUWI, Moto G Play, SM-A525F): mDNS discovery, `IN`/`OK` on both ports, `CK`
-keepalive, and CC/Note forwarding. An Apple iPad Air 2 (Apple's CoreMIDI
+Tested end to end against Faderling running on real phones and tablets on a
+Wi-Fi LAN (TB305FU, KFAUWI, Moto G Play, SM-A525F): mDNS discovery, `IN`/`OK`
+on both ports, `CK` keepalive, and CC/Note forwarding. An Apple iPad Air 2 (Apple's CoreMIDI
 RTP-MIDI stack) also completes the control and data handshake and clock sync. A
 captured real mDNS reply is part of the unit tests
 (`test_real_tablet_reply_uses_compressed_names`).
