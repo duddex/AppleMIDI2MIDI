@@ -59,68 +59,90 @@ re-invites a device automatically after it reconnects.
 
 ### RTP-MIDI (RFC 6295)
 
-[RTP-MIDI](https://www.rfc-editor.org/rfc/rfc6295) (RFC 6295, November 2011,
-which obsoletes RFC 4695) defines how MIDI 1.0 is carried inside RTP packets.
-A data packet is a normal RTP header (version 2, payload type 97 / `0x61`, the
-value AppleMIDI uses) followed by a *MIDI command section*:
+[RTP-MIDI](https://www.rfc-editor.org/rfc/rfc6295) (RFC 6295, June 2011, which
+obsoletes RFC 4695) defines how MIDI 1.0 commands are carried inside RTP
+packets. A data packet is a normal RTP header followed by a *MIDI command
+section*:
 
 ```
-+--------+---------+---------+-----+
-| 0x80 0x61 | seq | timestamp | ssrc |   RTP header (12 bytes)
-+--------+---------+---------+-----+
-| flags   | MIDI commands ...        |   command section
-+---------+-------------------------+
++-----------------------------+--------------------------------+
+| RTP header (12 bytes)       | MIDI command section           |
+| V=2, PT=97 (0x61 in Apple-  | B J Z P LEN | commands ...     |
+| MIDI), seq, timestamp, ssrc |                                |
++-----------------------------+--------------------------------+
 ```
 
-The first byte is a flags byte (`B` long/short header, `J` recovery journal,
-`Z`/`P` phantom/chapter, plus a 4-bit length for the first command). Each
-following command has a variable-length delta time and may rely on MIDI running
-status. The RTP timestamp counts in 100 µs units — the same unit AppleMIDI uses
-for its clock sync — so timing survives the network without a sample-accurate
-clock.
+RTP payload types are dynamically assigned: the RFC's SDP examples use 96, while
+AppleMIDI uses **97 (`0x61`)**. The first byte of the command section is a flags
+byte — `B` (long/short header), `J` (recovery journal present), `Z` and `P`
+(phantom/chapter) — whose low nibble is the length of the first command. Each
+following command carries a variable-length delta time and may use MIDI running
+status. The format encodes everything that can appear on a MIDI 1.0 DIN cable,
+including SysEx.
 
-This bridge implements the bytes Faderling and Apple actually produce: the
+RFC 6295 leaves the RTP **clock rate** to session setup (typically `rtpmap` in
+SDP, often an audio rate such as 44.1 kHz). AppleMIDI instead fixes the rate at
+**10 kHz — one timestamp unit is 100 µs** — and the same unit is used by its
+`CK` clock-sync messages.
+
+This bridge implements what Faderling and Apple actually put on the wire: the
 short header with an explicit first command, running status, multi-message
-packets and SysEx. The optional *recovery journal* (a redundancy mechanism for
-lost packets) is the one part it skips; Faderling never emits it.
+packets and SysEx. The optional *recovery journal* (RFC 6295's built-in packet
+loss recovery, backed by the `RS` feedback message) is the one part it skips;
+Faderling never emits one.
 
 ### AppleMIDI session control
 
-RFC 6295 only defines the payload — how MIDI rides in RTP. The *invitation*
-handshake lives outside it, in the protocol Apple shipped with its **MIDI
-Network** feature (macOS *Audio MIDI Setup → MIDI Network Setup*). It is usually
-called **AppleMIDI**, and the Bonjour/mDNS service type is `_apple-midi._udp`.
-Each session uses a control port `P` (conventionally `5004`) and a data port
-`P+1` (`5005`). Control packets start with `0xFFFF` and a two-character
-command:
+RFC 6295 suggests SIP/SDP for session management, but Apple shipped a much
+lighter protocol with the **MIDI Network** feature (macOS *Audio MIDI Setup →
+MIDI Network Setup*). Wireshark names it **AppleMIDI**, and the Bonjour/mDNS
+service type is `_apple-midi._udp`. A session is always between exactly two
+participants: an *initiator* and a *listener* (some devices, e.g. iOS, are
+listener-only).
 
-| Command | Meaning |
-| --- | --- |
-| `IN` | invitation: protocol version, random token, SSRC and session name |
-| `OK` / `NO` | accept / reject, echoing the token |
-| `BY` | end the session |
-| `CK` | clock sync: count `0` asks, count `1` answers, with 64-bit 100 µs timestamps |
+A session uses **two consecutive UDP ports** — the control port `P`
+(conventionally `5004`) and the data port `P+1` (`5005`) — and no MIDI may flow
+before the session reaches its *open* state. Control packets begin with
+`0xFF 0xFF` followed by a two-character command:
 
-The initiator opens both ports and invites both, but the order matters — see
-below.
+| Command | Value | Meaning |
+| --- | --- | --- |
+| `IN` | `0x494E` | invitation: version, random token, SSRC, session name |
+| `OK` / `NO` | `0x4F4B` / `0x4E4F` | accept / reject, echoing the token |
+| `BY` | `0x4259` | end the session (either side may send it) |
+| `CK` | `0x434B` | clock sync: `CK0` asks, `CK1` answers, `CK2` closes the round trip |
+| `RS` | `0x5253` | receiver feedback for the recovery journal |
+| `RL` | `0x524C` | bitrate / receive limit |
+
+To open a session the initiator sends `IN` to the control port and, once that is
+accepted, **repeats the invitation on the data port** before the clock sync
+starts. This bridge follows exactly that sequence (see the Apple note below).
 
 ### Apple-specific behaviour
 
-Apple's CoreMIDI stack is the de facto reference implementation of AppleMIDI
-and is stricter than Faderling's:
+Apple's CoreMIDI stack is the de facto reference for AppleMIDI and is stricter
+than Faderling's:
 
-- **Invitation ordering.** Apple rejects the data invitation if it arrives
-  before the control session exists. The bridge therefore sends the control
-  `IN`, waits for its `OK`, and only then invites the data port. Faderling
-  tolerates the two being sent back-to-back; Apple does not.
-- **Shared identity.** The control and data connections belong to one session,
-  so they share the same SSRC and token. The bridge uses one SSRC per process
-  and one token per peer on both ports.
+- **Invitation ordering.** Apple rejects the data `IN` when it arrives before
+  the control session exists. The bridge sends the control `IN`, waits for its
+  `OK`, and only then invites the data port. Faderling tolerates the two being
+  sent back-to-back; Apple does not.
+- **Session identity.** The control and data connections are two halves of one
+  session and carry the same token and SSRC; the bridge uses one SSRC per
+  process and one token per peer on both ports.
+- **Clock sync.** Apple expects the full `CK0` → `CK1` → `CK2` round trip and
+  repeats it a few times a minute, mainly to detect a lost partner. The bridge
+  sends `CK0` as a 5 s keepalive and consumes `CK1`; it does not send `CK2`,
+  since it does no latency compensation. Faderling needs no more than this.
 
-Faderling, the main target, has its own RFC 6295 implementation in Kotlin and
-is more forgiving of lost or reordered invitations, which is why the bridge
-retries invitations every couple of seconds and re-invites a device after a
-`BY`.
+Faderling, the main target, has its own RFC 6295 implementation in Kotlin and is
+more forgiving of lost or reordered invitations, which is why the bridge retries
+invitations every couple of seconds and re-invites a device after a `BY`.
+
+Further reading: [RFC 6295](https://www.rfc-editor.org/rfc/rfc6295), the
+[Wikipedia article on RTP-MIDI](https://en.wikipedia.org/wiki/RTP-MIDI) (which
+documents Apple's session protocol), and the
+[rtpMIDI tool](https://www.tobias-erichsen.de/software/rtpmidi.html).
 
 ## How it works
 
@@ -158,6 +180,8 @@ captured real mDNS reply is part of the unit tests
 - Recovery-journal packets (`J` bit set) are not implemented. Faderling never
   sends them; a packet that carries one is logged and skipped.
 - The bridge is receive-only, matching send-only devices such as Faderling.
+- The `CK2` leg of the clock-sync round trip and the `RS` receiver-feedback
+  message are not sent.
 - MIDI *forwarding* has only been exercised with Faderling; other AppleMIDI
   devices are verified for session setup and clock sync.
 
