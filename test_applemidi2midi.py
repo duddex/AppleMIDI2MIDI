@@ -6,7 +6,7 @@ import threading
 import time
 import unittest
 
-import rtpmidi_bridge as rb
+import applemidi2midi as rb
 
 
 def dns_name(name: str) -> bytes:

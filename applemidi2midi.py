@@ -9,11 +9,11 @@ a MIDI output port on this machine.
 
 Typical use::
 
-    python rtpmidi_bridge.py --list                    # show local MIDI outputs
-    python rtpmidi_bridge.py --scan                    # show devices on the network
-    python rtpmidi_bridge.py --to "loopMIDI Port"      # discover, connect, forward
-    python rtpmidi_bridge.py --host 192.168.1.50       # skip discovery
-    python rtpmidi_bridge.py --host 192.168.1.50:5006  # non-default session port
+    python applemidi2midi.py --list                    # show local MIDI outputs
+    python applemidi2midi.py --scan                    # show devices on the network
+    python applemidi2midi.py --to "loopMIDI Port"      # discover, connect, forward
+    python applemidi2midi.py --host 192.168.1.50       # skip discovery
+    python applemidi2midi.py --host 192.168.1.50:5006  # non-default session port
 
 The bridge connects to every discovered device at once and merges their streams
 into the selected output. It keeps each AppleMIDI session alive with periodic
@@ -986,10 +986,10 @@ def build_parser() -> argparse.ArgumentParser:
                     "to a local MIDI output port.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
-               "  rtpmidi_bridge.py --list\n"
-               "  rtpmidi_bridge.py --scan\n"
-               "  rtpmidi_bridge.py --to \"loopMIDI Port\"\n"
-               "  rtpmidi_bridge.py --host 192.168.1.50:5006 --to \"X390\"\n",
+               "  applemidi2midi.py --list\n"
+               "  applemidi2midi.py --scan\n"
+               "  applemidi2midi.py --to \"loopMIDI Port\"\n"
+               "  applemidi2midi.py --host 192.168.1.50:5006 --to \"X390\"\n",
     )
     parser.add_argument("--list", action="store_true", help="list local MIDI output ports and exit")
     parser.add_argument("--scan", action="store_true", help="scan for devices, list them and exit")

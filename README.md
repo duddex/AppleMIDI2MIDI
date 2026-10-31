@@ -1,4 +1,4 @@
-# python_rtpmidi
+# AppleMIDI2MIDI
 
 A small, pure-Python **RTP-MIDI (AppleMIDI) receiver** that replaces the PC-side
 rtpMIDI tool by Tobias Erichsen. It discovers devices that advertise themselves
@@ -24,11 +24,11 @@ pip install -r requirements.txt
 ## Use
 
 ```powershell
-python rtpmidi_bridge.py --list                    # show local MIDI outputs
-python rtpmidi_bridge.py --scan                    # show AppleMIDI devices on the network
-python rtpmidi_bridge.py --to "loopMIDI Port"      # discover, connect, forward
-python rtpmidi_bridge.py --host 192.168.1.50       # skip discovery
-python rtpmidi_bridge.py --host 192.168.1.50:5006  # non-default session port
+python applemidi2midi.py --list                    # show local MIDI outputs
+python applemidi2midi.py --scan                    # show AppleMIDI devices on the network
+python applemidi2midi.py --to "loopMIDI Port"      # discover, connect, forward
+python applemidi2midi.py --host 192.168.1.50       # skip discovery
+python applemidi2midi.py --host 192.168.1.50:5006  # non-default session port
 ```
 
 If `--to` is omitted and more than one output exists, the bridge prints a list
