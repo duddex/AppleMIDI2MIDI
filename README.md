@@ -15,6 +15,8 @@ AppleMIDI and advertises via Bonjour.
 
 ## Install
 
+Requires Python 3.8 or newer.
+
 ```powershell
 pip install -r requirements.txt
 ```
@@ -52,6 +54,73 @@ The bridge connects to **all** discovered devices at once and merges their
 streams into the one output. It keeps each session alive with a clock-sync
 packet every 5 s (AppleMIDI peers drop an idle session after ~60 s) and
 re-invites a device automatically after it reconnects.
+
+## Background
+
+### RTP-MIDI (RFC 6295)
+
+[RTP-MIDI](https://www.rfc-editor.org/rfc/rfc6295) (RFC 6295, November 2011,
+which obsoletes RFC 4695) defines how MIDI 1.0 is carried inside RTP packets.
+A data packet is a normal RTP header (version 2, payload type 97 / `0x61`, the
+value AppleMIDI uses) followed by a *MIDI command section*:
+
+```
++--------+---------+---------+-----+
+| 0x80 0x61 | seq | timestamp | ssrc |   RTP header (12 bytes)
++--------+---------+---------+-----+
+| flags   | MIDI commands ...        |   command section
++---------+-------------------------+
+```
+
+The first byte is a flags byte (`B` long/short header, `J` recovery journal,
+`Z`/`P` phantom/chapter, plus a 4-bit length for the first command). Each
+following command has a variable-length delta time and may rely on MIDI running
+status. The RTP timestamp counts in 100 µs units — the same unit AppleMIDI uses
+for its clock sync — so timing survives the network without a sample-accurate
+clock.
+
+This bridge implements the bytes Faderling and Apple actually produce: the
+short header with an explicit first command, running status, multi-message
+packets and SysEx. The optional *recovery journal* (a redundancy mechanism for
+lost packets) is the one part it skips; Faderling never emits it.
+
+### AppleMIDI session control
+
+RFC 6295 only defines the payload — how MIDI rides in RTP. The *invitation*
+handshake lives outside it, in the protocol Apple shipped with its **MIDI
+Network** feature (macOS *Audio MIDI Setup → MIDI Network Setup*). It is usually
+called **AppleMIDI**, and the Bonjour/mDNS service type is `_apple-midi._udp`.
+Each session uses a control port `P` (conventionally `5004`) and a data port
+`P+1` (`5005`). Control packets start with `0xFFFF` and a two-character
+command:
+
+| Command | Meaning |
+| --- | --- |
+| `IN` | invitation: protocol version, random token, SSRC and session name |
+| `OK` / `NO` | accept / reject, echoing the token |
+| `BY` | end the session |
+| `CK` | clock sync: count `0` asks, count `1` answers, with 64-bit 100 µs timestamps |
+
+The initiator opens both ports and invites both, but the order matters — see
+below.
+
+### Apple-specific behaviour
+
+Apple's CoreMIDI stack is the de facto reference implementation of AppleMIDI
+and is stricter than Faderling's:
+
+- **Invitation ordering.** Apple rejects the data invitation if it arrives
+  before the control session exists. The bridge therefore sends the control
+  `IN`, waits for its `OK`, and only then invites the data port. Faderling
+  tolerates the two being sent back-to-back; Apple does not.
+- **Shared identity.** The control and data connections belong to one session,
+  so they share the same SSRC and token. The bridge uses one SSRC per process
+  and one token per peer on both ports.
+
+Faderling, the main target, has its own RFC 6295 implementation in Kotlin and
+is more forgiving of lost or reordered invitations, which is why the bridge
+retries invitations every couple of seconds and re-invites a device after a
+`BY`.
 
 ## How it works
 
