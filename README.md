@@ -63,8 +63,11 @@ re-invites a device automatically after it reconnects.
    PTR/SRV RDATA. Sessions this machine advertises itself (e.g. rtpMIDI's own
    service) are skipped unless `--allow-local` is given.
 2. **Session setup** — sends an AppleMIDI `IN` invitation from a control socket
-   to the device's control port (`P`) and from a data socket to its data port
-   (`P+1`), and handles `OK` / `NO`. The data socket is where MIDI arrives.
+   to the device's control port (`P`), waits for the control `OK`, then invites
+   the data port (`P+1`) from the data socket. The two are sequenced because
+   Apple's RTP-MIDI (iPad, Audio MIDI Setup) rejects the data invitation when it
+   arrives before the control session exists. The data socket is where MIDI
+   arrives.
 3. **Clock sync** — exchanges `CK` packets every 5 s so the device keeps the
    session open (AppleMIDI peers drop an idle session after ~60 s).
 4. **Forwarding** — parses the RTP-MIDI command section (short header, running
@@ -75,8 +78,10 @@ re-invites a device automatically after it reconnects.
 
 Tested end to end against real Faderling tablets on a Wi-Fi LAN (TB305FU,
 KFAUWI, Moto G Play, SM-A525F): mDNS discovery, `IN`/`OK` on both ports, `CK`
-keepalive, and CC/Note forwarding. A captured real mDNS reply is part of the
-unit tests (`test_real_tablet_reply_uses_compressed_names`).
+keepalive, and CC/Note forwarding. An Apple iPad Air 2 (Apple's CoreMIDI
+RTP-MIDI stack) also completes the control and data handshake and clock sync. A
+captured real mDNS reply is part of the unit tests
+(`test_real_tablet_reply_uses_compressed_names`).
 
 ## Limitations
 
@@ -84,9 +89,8 @@ unit tests (`test_real_tablet_reply_uses_compressed_names`).
 - Recovery-journal packets (`J` bit set) are not implemented. Faderling never
   sends them; a packet that carries one is logged and skipped.
 - The bridge is receive-only, matching send-only devices such as Faderling.
-- Only Faderling has been verified end to end. Other AppleMIDI stacks may be
-  stricter: an Apple iPad Air 2 accepted the control session but not the data
-  session in testing.
+- MIDI *forwarding* has only been exercised with Faderling; other AppleMIDI
+  devices are verified for session setup and clock sync.
 
 ## Tests
 

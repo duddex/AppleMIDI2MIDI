@@ -123,6 +123,34 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(ssrc, 0x12345678)
         self.assertEqual(name, "Test")
 
+    def test_data_invitation_waits_for_control_ok(self) -> None:
+        # Apple's RTP-MIDI rejects the data invitation if it arrives before the
+        # control session is accepted, so the bridge must sequence them.
+        class RecordingSocket:
+            def __init__(self) -> None:
+                self.sent = []
+
+            def sendto(self, data, address) -> None:
+                self.sent.append(address)
+
+            def close(self) -> None:
+                pass
+
+        bridge = rb.Bridge(None, "Test")
+        bridge._control = RecordingSocket()
+        bridge._data = RecordingSocket()
+        peer = rb.Peer("key", "Device", "127.0.0.1", 5004)
+        bridge._peers["key"] = peer
+
+        bridge._tick(time.monotonic())
+        self.assertEqual(bridge._control.sent, [("127.0.0.1", 5004)])
+        self.assertEqual(bridge._data.sent, [])
+
+        peer.control_ok = True
+        peer.next_invite = 0.0
+        bridge._tick(time.monotonic())
+        self.assertEqual(bridge._data.sent, [("127.0.0.1", 5005)])
+
     def test_loopback_session_forwards_midi(self) -> None:
         control_port = 5614
         data_port = control_port + 1

@@ -739,6 +739,7 @@ class Bridge:
             if not peer.control_ok:
                 log(f"{peer.name}: control session accepted")
             peer.control_ok = True
+            peer.next_invite = 0.0  # invite the data session on the next tick
 
     def _on_reject(self, packet: bytes, address: tuple[str, int]) -> None:
         parsed = parse_session(packet)
@@ -812,15 +813,30 @@ class Bridge:
 
     # -- outgoing ----------------------------------------------------------- #
 
-    def _invite(self, peer: Peer) -> None:
-        assert self._control is not None and self._data is not None
+    def _invite_control(self, peer: Peer) -> None:
+        assert self._control is not None
         packet = session_packet(CMD_INVITATION, peer.token, self.ssrc, self.session_name)
         try:
             self._control.sendto(packet, (peer.ip, peer.control_port))
+        except OSError as exc:
+            if self.verbose:
+                log(f"{peer.name}: control invite failed ({exc})")
+        peer.next_invite = time.monotonic() + self.INVITE_INTERVAL
+
+    def _invite_data(self, peer: Peer) -> None:
+        """Invite the data session.
+
+        Only ever called once the control session is accepted. Apple's RTP-MIDI
+        (an iPad, Audio MIDI Setup) rejects the data invitation when it arrives
+        before the control session exists, so the two must be sequenced.
+        """
+        assert self._data is not None
+        packet = session_packet(CMD_INVITATION, peer.token, self.ssrc, self.session_name)
+        try:
             self._data.sendto(packet, (peer.ip, peer.data_port))
         except OSError as exc:
             if self.verbose:
-                log(f"{peer.name}: invite failed ({exc})")
+                log(f"{peer.name}: data invite failed ({exc})")
         peer.next_invite = time.monotonic() + self.INVITE_INTERVAL
 
     def _send_clock_sync(self, peer: Peer) -> None:
@@ -866,7 +882,12 @@ class Bridge:
                     peer.data_ok = False
                     peer.next_invite = now
             elif now >= peer.next_invite:
-                self._invite(peer)
+                # Sequence the two invitations: control first, data only after
+                # the control session has been accepted (needed for AppleMIDI).
+                if peer.control_ok:
+                    self._invite_data(peer)
+                else:
+                    self._invite_control(peer)
 
     def _shutdown(self) -> None:
         self._running = False
