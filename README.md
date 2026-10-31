@@ -9,9 +9,10 @@ output port on this machine.
 
 Networking and mDNS/Bonjour discovery use **only the Python standard library**.
 The local MIDI output uses [`mido`](https://mido.readthedocs.io/) /
-`python-rtmidi`. Any device that speaks AppleMIDI should work; the main target
-is [Faderling](https://github.com/duddex/faderling), which sends MIDI over
-AppleMIDI and advertises via Bonjour.
+`python-rtmidi`. Any device that speaks AppleMIDI should work; it is built for
+and verified against **[Faderling](https://github.com/duddex/faderling)**, the
+Android tablet controller that sends MIDI over AppleMIDI and advertises via
+Bonjour.
 
 ## Install
 
@@ -184,6 +185,15 @@ captured real mDNS reply is part of the unit tests
   message are not sent.
 - MIDI *forwarding* has only been exercised with Faderling; other AppleMIDI
   devices are verified for session setup and clock sync.
+
+## Related
+
+- **[Faderling](https://github.com/duddex/faderling)** — the Android app this
+  bridge was built for: a tablet or phone whose screen becomes MIDI faders,
+  buttons, a keyboard, drum pads, LFOs and XY pads, sent over AppleMIDI.
+- [rtpMIDI](https://www.tobias-erichsen.de/software/rtpmidi.html) — Tobias
+  Erichsen's Windows/macOS RTP-MIDI driver, which this project replaces with a
+  single pure-Python script.
 
 ## Tests
 
