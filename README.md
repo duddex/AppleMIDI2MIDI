@@ -65,6 +65,26 @@ streams into the one output. It keeps each session alive with a clock-sync
 packet every 5 s (AppleMIDI peers drop an idle session after ~60 s) and
 re-invites a device automatically after it reconnects.
 
+### Several devices at once
+
+Because every device is merged into the single `--to` output, you can use a
+Faders page on one tablet and a Keyboard page on another at the same time (each
+device needs Faderling in the foreground):
+
+```powershell
+python applemidi2midi.py --device Faderling --to "loopMIDI Port"
+```
+
+There is no channel remapping, so give each device a distinct MIDI channel (or
+disjoint CCs/notes) in Faderling — otherwise two devices sending the same CC
+overwrite each other. If discovery misses a device (some older Android versions
+advertise over Bonjour but do not answer the discovery query), add it by IP;
+`--host` may be repeated:
+
+```powershell
+python applemidi2midi.py --host 192.168.1.50 --host 192.168.1.51 --to "loopMIDI Port"
+```
+
 ## Background
 
 ### RTP-MIDI (RFC 6295)
@@ -235,6 +255,9 @@ unit tests (`test_real_tablet_reply_uses_compressed_names`).
   reply comes back to an ephemeral UDP port.
 - Discovery is mDNS, not DNS — `ping` a `.local` name and it will fail. Use
   `--scan` or `--host <ip>` instead.
+- Some older devices advertise over Bonjour but never answer the discovery
+  query (seen on Android 5.1). Connect to them by IP with `--host <ip>` — it is
+  repeatable, so several such devices still merge into one output.
 
 **A device appears in `--scan` but never says "control/data session accepted"**
 
