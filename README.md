@@ -217,6 +217,8 @@ unit tests (`test_real_tablet_reply_uses_compressed_names`).
 - The bridge is receive-only, matching send-only devices such as Faderling.
 - The `CK2` leg of the clock-sync round trip and the `RS` receiver-feedback
   message are not sent.
+- SysEx split across several RTP-MIDI packets is not reassembled; the fragments
+  are forwarded piecemeal. Notes, CC and program changes are unaffected.
 - MIDI *forwarding* has only been exercised with Faderling; other AppleMIDI
   devices are verified for session setup and clock sync.
 
