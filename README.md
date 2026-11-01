@@ -28,6 +28,7 @@ pip install -r requirements.txt
 python applemidi2midi.py --list                    # show local MIDI outputs
 python applemidi2midi.py --scan                    # show AppleMIDI devices on the network
 python applemidi2midi.py --to "loopMIDI Port"      # discover, connect, forward
+python applemidi2midi.py --device "Moto G Play"    # only one discovered device
 python applemidi2midi.py --host 192.168.1.50       # skip discovery
 python applemidi2midi.py --host 192.168.1.50:5006  # non-default session port
 ```
@@ -45,6 +46,7 @@ Options:
 | `--scan` | scan for AppleMIDI sessions, list them and exit |
 | `--to NAME` | local MIDI output to forward to (case-insensitive substring) |
 | `--host HOST[:PORT]` | connect straight to a device, skipping mDNS |
+| `--device NAME` | only connect to discovered sessions whose name contains NAME (repeatable) |
 | `--port PORT` | control port for `--host` (default `5004`) |
 | `--name NAME` | session name the device shows (default `RTP-MIDI Bridge`) |
 | `--discover SECONDS` | how long `--scan` listens (default `4`) |
@@ -189,6 +191,54 @@ captured real mDNS reply is part of the unit tests
   message are not sent.
 - MIDI *forwarding* has only been exercised with Faderling; other AppleMIDI
   devices are verified for session setup and clock sync.
+
+## Troubleshooting
+
+**`--scan` finds nothing**
+
+- Start the app on the device and keep it in the **foreground**; Faderling stops
+  its session when it is backgrounded or the screen turns off.
+- All devices must be on the same subnet/VLAN. Guest Wi-Fi, access-point
+  "client isolation" and some VPNs block mDNS and the UDP session.
+- Allow Python through the firewall for **private** networks: the discovery
+  reply comes back to an ephemeral UDP port.
+- Discovery is mDNS, not DNS — `ping` a `.local` name and it will fail. Use
+  `--scan` or `--host <ip>` instead.
+
+**A device appears in `--scan` but never says "control/data session accepted"**
+
+- Try `--host <ip>` to bypass discovery.
+- Wait ~60 s or restart the app on the device: a stale peer from an earlier
+  session can linger until it times out.
+
+**`--host` stops working after a while**
+
+- DHCP moved the device (it can change mid-session). Use
+  `--device "<name from --scan>"`; discovery re-resolves the address every few
+  seconds, so it survives the change.
+
+**The session ends after a while**
+
+- Faderling only runs while visible: screen timeout or switching apps ends the
+  session. The bridge logs `no reply, reconnecting` and re-invites the device
+  when the app comes back.
+
+**`--list` finds no ports, or mido reports no backend**
+
+- Install the dependencies: `pip install -r requirements.txt`.
+- Windows: install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html)
+  (or use a hardware synth). macOS: enable an IAC bus in *Audio MIDI Setup*.
+
+**A session on this machine is skipped**
+
+- Locally advertised sessions (e.g. the session from an rtpMIDI driver on this
+  machine) are ignored unless you pass `--allow-local`.
+
+**An Apple device connects but sends no MIDI**
+
+- Since 1.0.0 the MIDI list of journal-bearing packets is forwarded (the
+  recovery journal itself is skipped). If it still fails, run with `-v` and
+  check the log.
 
 ## Related
 

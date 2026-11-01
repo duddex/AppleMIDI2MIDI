@@ -183,6 +183,20 @@ class SessionTests(unittest.TestCase):
         bridge._tick(time.monotonic())
         self.assertEqual(bridge._data.sent, [("127.0.0.1", 5005)])
 
+    def test_device_filter_limits_discovered_peers(self) -> None:
+        class FakeDiscovery:
+            def snapshot(self):
+                return [
+                    {"name": "Faderling Debug Moto G Play",
+                     "addresses": ["192.0.2.10"], "port": 5004},
+                    {"name": "Faderling TB305FU",
+                     "addresses": ["192.0.2.11"], "port": 5004},
+                ]
+
+        bridge = rb.Bridge(None, "Test", devices=["Moto G Play"])
+        bridge.sync_discovery(FakeDiscovery())
+        self.assertEqual(list(bridge._peers), ["Faderling Debug Moto G Play"])
+
     def test_loopback_session_forwards_midi(self) -> None:
         control_port = 5614
         data_port = control_port + 1

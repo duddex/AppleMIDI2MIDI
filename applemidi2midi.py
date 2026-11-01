@@ -624,11 +624,12 @@ class Bridge:
     STALE_AFTER = 30.0      # re-invite when nothing was heard for this long
 
     def __init__(self, output, session_name: str, verbose: bool = False,
-                 allow_local: bool = False) -> None:
+                 allow_local: bool = False, devices: list[str] | None = None) -> None:
         self.output = output
         self.session_name = session_name
         self.verbose = verbose
         self.allow_local = allow_local
+        self.devices = [device.lower() for device in (devices or [])]
         self.ssrc = random.getrandbits(32)
         self._peers: dict[str, Peer] = {}
         self._lock = threading.Lock()
@@ -650,6 +651,9 @@ class Bridge:
 
     def sync_discovery(self, discovery: MdnsDiscovery) -> None:
         for service in discovery.snapshot():
+            if self.devices and not any(
+                    device in service["name"].lower() for device in self.devices):
+                continue
             remote = [a for a in service["addresses"] if a not in self._local_addresses]
             if not remote:  # a session this machine advertises itself
                 if service["name"] not in self._skipped_local:
@@ -1013,6 +1017,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scan", action="store_true", help="scan for devices, list them and exit")
     parser.add_argument("--to", metavar="NAME", help="local MIDI output (name substring)")
     parser.add_argument("--host", metavar="HOST[:PORT]", help="connect to this device instead of discovering")
+    parser.add_argument("--device", metavar="NAME", action="append",
+                        help="only connect to discovered sessions whose name contains NAME (repeatable)")
     parser.add_argument("--port", type=int, default=5004, help="control port for --host (default 5004)")
     parser.add_argument("--name", default="RTP-MIDI Bridge", help="session name shown on the device")
     parser.add_argument("--discover", type=float, default=4.0, help="seconds to scan for --scan (default 4)")
@@ -1024,6 +1030,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.host and args.device:
+        print("--host and --device are mutually exclusive", file=sys.stderr)
+        return 2
 
     if args.scan:
         run_scan(args.discover)
@@ -1051,7 +1061,8 @@ def main(argv: list[str] | None = None) -> int:
         discovery.start()
         log("discovering AppleMIDI sessions ...")
 
-    bridge = Bridge(output, args.name, verbose=args.verbose, allow_local=args.allow_local)
+    bridge = Bridge(output, args.name, verbose=args.verbose, allow_local=args.allow_local,
+                    devices=args.device)
     try:
         if host is not None:
             bridge.add_manual_peer(host, port)
