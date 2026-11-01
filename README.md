@@ -86,11 +86,13 @@ SDP, often an audio rate such as 44.1 kHz). AppleMIDI instead fixes the rate at
 **10 kHz — one timestamp unit is 100 µs** — and the same unit is used by its
 `CK` clock-sync messages.
 
-This bridge implements what Faderling and Apple actually put on the wire: the
-short header with an explicit first command, running status, multi-message
-packets and SysEx. The optional *recovery journal* (RFC 6295's built-in packet
-loss recovery, backed by the `RS` feedback message) is the one part it skips;
-Faderling never emits one.
+This bridge implements what Faderling and Apple put on the wire: the short and
+long command-section headers (`B`), the 4-bit and 12-bit list length (`LEN`),
+the `Z` delta-time rule, running status, multi-message lists and SysEx. It does
+not implement *journal repair* (RFC 6295's loss-recovery mechanism, backed by
+the `RS` feedback message): a journal-bearing packet's MIDI list is forwarded
+normally, and the journal bytes that follow it are skipped. Faderling never
+emits a journal.
 
 ### AppleMIDI session control
 
@@ -162,8 +164,9 @@ documents Apple's session protocol), and the
    arrives.
 3. **Clock sync** — exchanges `CK` packets every 5 s so the device keeps the
    session open (AppleMIDI peers drop an idle session after ~60 s).
-4. **Forwarding** — parses the RTP-MIDI command section (short header, running
-   status, SysEx) and feeds every message to `mido`.
+4. **Forwarding** — parses the RTP-MIDI command section (short/long header,
+   `LEN`, the `Z` delta rule, running status, SysEx), skips the recovery journal
+   if present, and feeds every message to `mido`.
 5. **Teardown** — sends `BY` for each session on exit.
 
 ## Verified against
@@ -178,8 +181,9 @@ captured real mDNS reply is part of the unit tests
 ## Limitations
 
 - IPv4 only. Devices that advertise only an IPv6 (AAAA) address are ignored.
-- Recovery-journal packets (`J` bit set) are not implemented. Faderling never
-  sends them; a packet that carries one is logged and skipped.
+- Recovery-journal *repair* is not implemented: a packet with the `J` bit set
+  has its MIDI list forwarded, but the journal bytes are skipped. Faderling
+  never sends a journal.
 - The bridge is receive-only, matching send-only devices such as Faderling.
 - The `CK2` leg of the clock-sync round trip and the `RS` receiver-feedback
   message are not sent.

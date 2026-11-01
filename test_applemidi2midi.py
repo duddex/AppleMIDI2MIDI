@@ -19,21 +19,53 @@ class MidiCommandTests(unittest.TestCase):
         self.assertEqual(rb.parse_midi_commands(payload), [bytes([0xB0, 7, 100])])
 
     def test_running_status(self) -> None:
-        payload = bytes([0x03, 0x90, 60, 100, 0x00, 62, 110])
+        # LEN=6: command 0 (3 bytes) + delta + two data bytes via running status.
+        payload = bytes([0x06, 0x90, 60, 100, 0x00, 62, 110])
         self.assertEqual(
             rb.parse_midi_commands(payload),
             [bytes([0x90, 60, 100]), bytes([0x90, 62, 110])],
         )
 
     def test_two_byte_message(self) -> None:
-        payload = bytes([0x02, 0xC0, 5, 0x00, 0xC0, 6])
+        # LEN=5: Program Change 5, delta 0, Program Change 6.
+        payload = bytes([0x05, 0xC0, 5, 0x00, 0xC0, 6])
         self.assertEqual(
             rb.parse_midi_commands(payload),
             [bytes([0xC0, 5]), bytes([0xC0, 6])],
         )
 
-    def test_recovery_journal_is_unsupported(self) -> None:
-        self.assertIsNone(rb.parse_midi_commands(bytes([0x43, 0, 0, 0])))
+    def test_z_bit_adds_initial_delta_time(self) -> None:
+        # Z=1 (0x20), LEN=4: Delta Time 0 (0x00) + one CC.
+        payload = bytes([0x24, 0x00, 0xB0, 7, 100])
+        self.assertEqual(rb.parse_midi_commands(payload), [bytes([0xB0, 7, 100])])
+
+    def test_void_time_delta_without_command(self) -> None:
+        # LEN=4: one command, then a final delta time with no command.
+        payload = bytes([0x04, 0x90, 60, 100, 0x10])
+        self.assertEqual(rb.parse_midi_commands(payload), [bytes([0x90, 60, 100])])
+
+    def test_journal_is_skipped(self) -> None:
+        # J=1 (0x40), LEN=3.  The journal after the MIDI list is made to look
+        # like a valid command, proving LEN bounds the MIDI parsing.
+        payload = bytes([0x43, 0xB0, 7, 100, 0x00, 0xB0, 1, 2])
+        self.assertEqual(rb.parse_midi_commands(payload), [bytes([0xB0, 7, 100])])
+
+    def test_journal_with_z_bit(self) -> None:
+        # J=1, Z=1, LEN=4: Delta Time 0 + CC, then a journal.
+        payload = bytes([0x64, 0x00, 0xB0, 7, 100, 0x00, 0x00, 0x2A])
+        self.assertEqual(rb.parse_midi_commands(payload), [bytes([0xB0, 7, 100])])
+
+    def test_journal_only_packet_has_no_midi(self) -> None:
+        # LEN=0, J=1: a packet that only carries a recovery journal.
+        payload = bytes([0x40, 0x00, 0x00, 0x2A])
+        self.assertEqual(rb.parse_midi_commands(payload), [])
+
+    def test_long_header_12bit_len(self) -> None:
+        # B=1 (0x80).  LEN = 0x0104 (260) exercises both the high nibble and
+        # the low octet of the 12-bit length; the list is a long SysEx.
+        body = bytes([0xF0]) + bytes(258) + bytes([0xF7])
+        payload = bytes([0x80 | 0x01, 0x04]) + body
+        self.assertEqual(rb.parse_midi_commands(payload), [body])
 
     def test_full_rtp_packet(self) -> None:
         packet = bytes([0x80, 0x61, 0, 1]) + bytes(8) + bytes([0x03, 0x90, 60, 127])
