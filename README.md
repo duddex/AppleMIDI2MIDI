@@ -5,7 +5,10 @@ rtpMIDI tool by Tobias Erichsen. It discovers devices that advertise themselves
 as `_apple-midi._udp.local` on the local network, connects to them as an
 initiator (the same role rtpMIDI plays), and forwards everything they send —
 Control Change, Note On/Off, pitch bend, aftertouch, program change — to a MIDI
-output port on this machine.
+output port on this machine. With `--listen` it can also do the opposite:
+advertise itself over Bonjour and let devices connect *to it*, which is the role
+needed for senders that only transmit on sessions they initiate (e.g. an iPad's
+MIDI Network session).
 
 Networking and mDNS/Bonjour discovery use **only the Python standard library**.
 The local MIDI output uses [`mido`](https://mido.readthedocs.io/) /
@@ -31,6 +34,7 @@ python applemidi2midi.py --to "loopMIDI Port"      # discover, connect, forward
 python applemidi2midi.py --device "Moto G Play"    # only one discovered device
 python applemidi2midi.py --host 192.168.1.50       # skip discovery
 python applemidi2midi.py --host 192.168.1.50:5006  # non-default session port
+python applemidi2midi.py --listen --to "loopMIDI Port"   # let devices connect to us
 ```
 
 If `--to` is omitted and more than one output exists, the bridge prints a list
@@ -47,6 +51,8 @@ Options:
 | `--to NAME` | local MIDI output to forward to (case-insensitive substring) |
 | `--host HOST[:PORT]` | connect straight to a device, skipping mDNS |
 | `--device NAME` | only connect to discovered sessions whose name contains NAME (repeatable) |
+| `--listen` | advertise via Bonjour and let devices connect to us (responder role) |
+| `--no-bonjour` | with `--listen`, do not advertise (connect by IP) |
 | `--port PORT` | control port for `--host` (default `5004`) |
 | `--name NAME` | session name the device shows (default `RTP-MIDI Bridge`) |
 | `--discover SECONDS` | how long `--scan` listens (default `4`) |
@@ -149,6 +155,19 @@ Further reading: [RFC 6295](https://www.rfc-editor.org/rfc/rfc6295), the
 documents Apple's session protocol), and the
 [rtpMIDI tool](https://www.tobias-erichsen.de/software/rtpmidi.html).
 
+### Two roles
+
+`applemidi2midi.py` works both ways:
+
+- **Initiator (default)** — discovers devices and connects *to* them. This is
+  what Faderling expects: it is a responder that pushes MIDI to every receiver
+  that connects.
+- **Listener (`--listen`)** — binds `P`/`P+1` (default `5004`/`5005`, falling
+  back if taken), advertises `_apple-midi._udp` over Bonjour, and accepts
+  sessions from devices that connect *to* it. Apple devices using the iOS MIDI
+  Network send local MIDI only on the sessions **they** open, so receiving from
+  an iPad/iPhone requires this role.
+
 ## How it works
 
 1. **Discovery** — sends an mDNS query for `_apple-midi._udp.local` (PTR) with
@@ -171,14 +190,23 @@ documents Apple's session protocol), and the
    if present, and feeds every message to `mido`.
 5. **Teardown** — sends `BY` for each session on exit.
 
+In `--listen` mode the same parser and forwarding are used; the differences are
+that the bridge **binds** the ports, **advertises** the service via mDNS
+(PTR/SRV/TXT/A answers plus periodic announcements) and answers `IN` with `OK`
+and `CK0` with a `CK1` reply. The advertised host name is unique
+(`applemidi2midi-<machine>.local`) so it does not clash with another responder
+on the same machine.
+
 ## Verified against
 
 Tested end to end against Faderling running on real phones and tablets on a
 Wi-Fi LAN (TB305FU, KFAUWI, Moto G Play, SM-A525F): mDNS discovery, `IN`/`OK`
-on both ports, `CK` keepalive, and CC/Note forwarding. An Apple iPad Air 2 (Apple's CoreMIDI
-RTP-MIDI stack) also completes the control and data handshake and clock sync. A
-captured real mDNS reply is part of the unit tests
-(`test_real_tablet_reply_uses_compressed_names`).
+on both ports, `CK` keepalive, and CC/Note forwarding. An Apple iPad Air 2
+(Apple's CoreMIDI RTP-MIDI stack) also completes the control and data handshake
+and clock sync. In `--listen` mode the iPad connects to the bridge over Bonjour
+and its MIDI — program changes, control changes and notes from an iPad app —
+arrives directly and is forwarded. A captured real mDNS reply is part of the
+unit tests (`test_real_tablet_reply_uses_compressed_names`).
 
 ## Limitations
 
@@ -236,6 +264,9 @@ captured real mDNS reply is part of the unit tests
 
 **An Apple device connects but sends no MIDI**
 
+- Apple devices using an iOS MIDI Network send local MIDI only on sessions
+  **they** open. Run the bridge with `--listen`, then connect that Bonjour
+  service in the device's MIDI Network app and its MIDI will arrive directly.
 - Since 1.0.0 the MIDI list of journal-bearing packets is forwarded (the
   recovery journal itself is skipped). If it still fails, run with `-v` and
   check the log.

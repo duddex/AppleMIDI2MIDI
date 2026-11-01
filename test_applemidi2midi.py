@@ -67,6 +67,10 @@ class MidiCommandTests(unittest.TestCase):
         payload = bytes([0x80 | 0x01, 0x04]) + body
         self.assertEqual(rb.parse_midi_commands(payload), [body])
 
+    def test_clock_sync_reply_round_trip(self) -> None:
+        reply = rb.clock_sync_reply(0x1234, 1111, 2222)
+        self.assertEqual(rb.parse_clock_sync(reply), (0x1234, 1, 1111, 2222, 0))
+
     def test_full_rtp_packet(self) -> None:
         packet = bytes([0x80, 0x61, 0, 1]) + bytes(8) + bytes([0x03, 0x90, 60, 127])
         self.assertEqual(rb.parse_rtp_midi(packet), [bytes([0x90, 60, 127])])
@@ -130,6 +134,27 @@ class DnsTests(unittest.TestCase):
         self.assertEqual(service["name"], "Faderling Debug SM-A525F")
         self.assertEqual(service["port"], 5004)
         self.assertEqual(service["addresses"], ["192.168.2.120"])
+
+    def test_advertiser_builds_service_records(self) -> None:
+        advertiser = rb.MdnsAdvertiser("Test Bridge", 5004)
+        records = rb._parse_dns_packet(advertiser._message(advertiser._record_list()))
+        by_type: dict[int, list] = {}
+        for record in records:
+            by_type.setdefault(record[1], []).append(record)
+
+        self.assertIn(rb.DNS_TYPE_PTR, by_type)
+        _labels, _rtype, _rclass, _rdata, message, offset = by_type[rb.DNS_TYPE_PTR][0]
+        target, _ = rb._decode_dns_name(message, offset)
+        self.assertEqual(target, ["Test Bridge", "_apple-midi", "_udp", "local"])
+
+        self.assertIn(rb.DNS_TYPE_SRV, by_type)
+        srv_labels, _t, _c, srv_rdata, srv_message, srv_offset = by_type[rb.DNS_TYPE_SRV][0]
+        self.assertEqual(srv_labels, ["Test Bridge", "_apple-midi", "_udp", "local"])
+        self.assertEqual(struct.unpack(">HHH", srv_rdata[:6])[2], 5004)
+        srv_target, _ = rb._decode_dns_name(srv_message, srv_offset + 6)
+        self.assertEqual(srv_target, [advertiser.host_name, "local"])
+
+        self.assertIn(rb.DNS_TYPE_A, by_type)
 
     def test_local_addresses_exclude_loopback(self) -> None:
         self.assertNotIn("127.0.0.1", rb.local_ipv4_addresses())
@@ -268,6 +293,65 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(output.messages[0].type, "control_change")
         self.assertEqual(output.messages[0].control, 7)
         self.assertEqual(output.messages[0].value, 100)
+
+
+class ListenerTests(unittest.TestCase):
+    def test_listener_accepts_and_forwards_midi(self) -> None:
+        class FakeOutput:
+            def __init__(self) -> None:
+                self.messages = []
+
+            def send(self, message) -> None:
+                self.messages.append(message)
+
+            def close(self) -> None:
+                pass
+
+        output = FakeOutput()
+        listener = rb.Listener(output, "Test Listener", control_port=None,
+                               verbose=False, advertise=False)
+        thread = threading.Thread(target=listener.run, daemon=True)
+        thread.start()
+        deadline = time.time() + 3
+        while listener._control is None and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertIsNotNone(listener._control, "listener did not bind")
+        port = listener.control_port
+
+        control = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        data = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        control.settimeout(1.5)
+        data.settimeout(1.5)
+        token, ssrc = 0x11223344, 0x55667788
+        invitation = rb.session_packet(rb.CMD_INVITATION, token, ssrc, "Fake Controller")
+        try:
+            control.sendto(invitation, ("127.0.0.1", port))
+            reply = control.recvfrom(2048)[0]
+            self.assertEqual(rb.apple_command(reply), rb.CMD_ACCEPT)
+            self.assertEqual(rb.parse_session(reply)[2], token)
+
+            data.sendto(invitation, ("127.0.0.1", port + 1))
+            self.assertEqual(rb.apple_command(data.recvfrom(2048)[0]), rb.CMD_ACCEPT)
+
+            data.sendto(rb.clock_sync_packet(ssrc, 4242), ("127.0.0.1", port + 1))
+            parsed = rb.parse_clock_sync(data.recvfrom(2048)[0])
+            self.assertEqual(parsed[1], 1)
+            self.assertEqual(parsed[2], 4242)
+
+            packet = bytes([0x80, 0x61, 0, 1]) + bytes(8) + bytes([0x03, 0x90, 60, 100])
+            data.sendto(packet, ("127.0.0.1", port + 1))
+            deadline = time.time() + 2
+            while time.time() < deadline and not output.messages:
+                time.sleep(0.02)
+        finally:
+            listener._running = False
+            thread.join(timeout=2)
+            control.close()
+            data.close()
+
+        self.assertEqual(len(output.messages), 1)
+        self.assertEqual(output.messages[0].type, "note_on")
+        self.assertEqual(output.messages[0].note, 60)
 
 
 if __name__ == "__main__":

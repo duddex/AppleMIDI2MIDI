@@ -62,6 +62,7 @@ DNS_TYPE_PTR = 12
 DNS_TYPE_TXT = 16
 DNS_TYPE_AAAA = 28
 DNS_TYPE_SRV = 33
+DNS_TYPE_ANY = 255
 
 
 def log(message: str) -> None:
@@ -97,10 +98,10 @@ def local_ipv4_addresses() -> list[str]:
 # DNS-SD / mDNS (standard library only)
 # --------------------------------------------------------------------------- #
 
-def _encode_dns_name(name: str) -> bytes:
-    """Encode a dotted name into DNS wire format (no compression)."""
+def _encode_labels(labels: list[str]) -> bytes:
+    """Encode DNS labels into wire format (no compression)."""
     out = bytearray()
-    for label in name.rstrip(".").split("."):
+    for label in labels:
         encoded = label.encode("utf-8")
         if len(encoded) > 63:
             raise ValueError(f"DNS label too long: {label!r}")
@@ -108,6 +109,11 @@ def _encode_dns_name(name: str) -> bytes:
         out += encoded
     out.append(0)
     return bytes(out)
+
+
+def _encode_dns_name(name: str) -> bytes:
+    """Encode a dotted name into DNS wire format (no compression)."""
+    return _encode_labels(name.rstrip(".").split("."))
 
 
 def _decode_dns_name(data: bytes, offset: int) -> tuple[list[str], int]:
@@ -174,6 +180,29 @@ def _parse_dns_packet(data: bytes) -> list[tuple[list[str], int, int, bytes, byt
         offset += rdlength
         records.append((labels, rtype, rclass, rdata, data, rdata_offset))
     return records
+
+
+def _parse_dns_questions(data: bytes) -> list[tuple[list[str], int, int]]:
+    """Return ``(labels, type, class)`` for each question in a DNS query."""
+    if len(data) < 12:
+        return []
+    try:
+        _, _, qdcount, _, _, _ = struct.unpack(">HHHHHH", data[:12])
+    except struct.error:
+        return []
+    offset = 12
+    questions = []
+    for _ in range(qdcount):
+        try:
+            labels, offset = _decode_dns_name(data, offset)
+        except ValueError:
+            break
+        if offset + 4 > len(data):
+            break
+        qtype, qclass = struct.unpack(">HH", data[offset:offset + 4])
+        offset += 4
+        questions.append((labels, qtype, qclass))
+    return questions
 
 
 class MdnsDiscovery:
@@ -386,6 +415,160 @@ class MdnsDiscovery:
         return address
 
 
+class MdnsAdvertiser:
+    """Advertise an ``_apple-midi._udp.local`` service over mDNS/Bonjour.
+
+    Answers PTR/SRV/TXT/A queries and sends unsolicited announcements so that
+    devices (e.g. an iPad running a MIDI Network app) can discover and connect
+    to the listener.  Standard library only.
+    """
+
+    def __init__(self, instance_name: str, port: int, verbose: bool = False) -> None:
+        self.instance_name = instance_name
+        self.port = port
+        self.verbose = verbose
+        # A unique host name avoids clashing with another responder on this
+        # machine (e.g. the rtpMIDI driver), which would otherwise answer A
+        # queries for the same ``<host>.local`` with different addresses.
+        machine = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in socket.gethostname())
+        self.host_name = f"applemidi2midi-{machine}".strip("-")[:63] or "applemidi2midi"
+        self._sock: socket.socket | None = None
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+    # -- record building ---------------------------------------------------- #
+
+    def _service_labels(self) -> list[str]:
+        return [self.instance_name, *APPLEMIDI_SERVICE]
+
+    def _host_labels(self) -> list[str]:
+        return [self.host_name, "local"]
+
+    @staticmethod
+    def _record(labels: list[str], rtype: int, rclass: int, ttl: int, rdata: bytes) -> bytes:
+        return (_encode_labels(labels)
+                + struct.pack(">HHIH", rtype, rclass, ttl, len(rdata)) + rdata)
+
+    def _record_list(self) -> list[bytes]:
+        unique = 0x8001  # cache-flush bit marks SRV/TXT/A as unique records
+        service = self._service_labels()
+        host = self._host_labels()
+        records = [
+            self._record(list(APPLEMIDI_SERVICE), DNS_TYPE_PTR, 0x0001, 4500,
+                         _encode_labels(service)),
+            self._record(service, DNS_TYPE_SRV, unique, 120,
+                         struct.pack(">HHH", 0, 0, self.port) + _encode_labels(host)),
+            self._record(service, DNS_TYPE_TXT, unique, 4500, b"\x00"),
+        ]
+        for address in local_ipv4_addresses():
+            records.append(self._record(host, DNS_TYPE_A, unique, 120,
+                                        socket.inet_aton(address)))
+        return records
+
+    def _message(self, records: list[bytes], query_id: int = 0) -> bytes:
+        header = struct.pack(">HHHHHH", query_id, 0x8400, 0, len(records), 0, 0)
+        return header + b"".join(records)
+
+    # -- lifecycle ---------------------------------------------------------- #
+
+    def start(self) -> bool:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                except OSError:
+                    pass
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+            sock.bind(("", MDNS_PORT))
+            for address in local_ipv4_addresses():
+                try:
+                    membership = socket.inet_aton(MDNS_GROUP) + socket.inet_aton(address)
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+                except OSError:
+                    pass
+            sock.settimeout(0.5)
+        except OSError as exc:
+            log(f"Bonjour advertising unavailable ({exc}); connect by IP instead")
+            return False
+        self._sock = sock
+        self._running = True
+        self._thread = threading.Thread(target=self._run, name="mdns-advertise", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+
+    # -- mDNS --------------------------------------------------------------- #
+
+    def _should_respond(self, questions: list[tuple[list[str], int, int]]) -> bool:
+        service = [label.lower() for label in self._service_labels()]
+        host = [label.lower() for label in self._host_labels()]
+        for labels, qtype, _qclass in questions:
+            low = [label.lower() for label in labels]
+            if qtype == DNS_TYPE_PTR and low == list(APPLEMIDI_SERVICE):
+                return True
+            if low == service and qtype in (DNS_TYPE_SRV, DNS_TYPE_TXT, DNS_TYPE_ANY):
+                return True
+            if low == host and qtype in (DNS_TYPE_A, DNS_TYPE_ANY):
+                return True
+        return False
+
+    def _send_multicast(self, data: bytes) -> None:
+        assert self._sock is not None
+        for address in local_ipv4_addresses() or ["0.0.0.0"]:
+            try:
+                self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                                      socket.inet_aton(address))
+                self._sock.sendto(data, (MDNS_GROUP, MDNS_PORT))
+            except OSError:
+                continue
+
+    def _announce(self) -> None:
+        message = self._message(self._record_list())
+        self._send_multicast(message)
+        time.sleep(0.2)
+        self._send_multicast(message)
+
+    def _run(self) -> None:
+        self._announce()
+        last_announce = time.monotonic()
+        while self._running:
+            now = time.monotonic()
+            if now - last_announce >= 60.0:
+                self._announce()
+                last_announce = now
+            try:
+                data, address = self._sock.recvfrom(9000)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            questions = _parse_dns_questions(data)
+            if not questions or not self._should_respond(questions):
+                continue
+            if self.verbose:
+                log(f"mDNS query for us from {address[0]}")
+            query_id = struct.unpack(">H", data[:2])[0]
+            message = self._message(self._record_list(), query_id)
+            if any(qclass & 0x8000 for _labels, _qtype, qclass in questions):
+                try:
+                    self._sock.sendto(message, address)
+                except OSError:
+                    pass
+            else:
+                self._send_multicast(message)
+
+
 # --------------------------------------------------------------------------- #
 # AppleMIDI session packets
 # --------------------------------------------------------------------------- #
@@ -433,6 +616,11 @@ def parse_clock_sync(packet: bytes) -> tuple[int, int, int, int, int] | None:
 # --------------------------------------------------------------------------- #
 # RTP-MIDI packet parsing
 # --------------------------------------------------------------------------- #
+
+def clock_sync_reply(ssrc: int, timestamp1: int, timestamp2: int) -> bytes:
+    """Build a count-1 clock-sync reply (echo ``t1``, answer with our ``t2``)."""
+    return struct.pack(">HHIB3xQQQ", 0xFFFF, CMD_CLOCK_SYNC, ssrc, 1, timestamp1, timestamp2, 0)
+
 
 def _read_vlq(data: bytes, offset: int, end: int | None = None) -> tuple[int | None, int]:
     """Read a variable-length quantity; return ``(value, next_offset)``.
@@ -557,10 +745,20 @@ def parse_rtp_midi(packet: bytes) -> list[bytes]:
     return parse_midi_commands(packet[12:])
 
 
-def _bind_udp_pair() -> tuple[socket.socket, socket.socket]:
-    """Bind a control/data UDP socket pair on adjacent ports (P, P+1)."""
-    for _ in range(60):
-        port = random.randrange(49152, 65534, 2)
+def _bind_udp_pair(preferred: int | None = None) -> tuple[socket.socket, socket.socket]:
+    """Bind a control/data UDP socket pair on adjacent ports (P, P+1).
+
+    ``preferred`` tries that control port first (e.g. 5004), then steps by two.
+    """
+    candidates: list[int] = []
+    if preferred is not None:
+        candidates += [preferred + 2 * step for step in range(20)]
+    candidates += [random.randrange(49152, 65534, 2) for _ in range(40)]
+    seen: set[int] = set()
+    for port in candidates:
+        if port in seen or not 1024 <= port <= 65533:
+            continue
+        seen.add(port)
         control = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             control.bind(("", port))
@@ -936,6 +1134,145 @@ class Bridge:
             pass
 
 
+class Listener:
+    """Responder side of AppleMIDI: accepts invitations and forwards MIDI.
+
+    Devices connect *to us* (as they do to Faderling): we answer ``IN`` with
+    ``OK`` on the control and data ports, reply to ``CK`` clock sync, and
+    forward every RTP-MIDI message to the local MIDI output.  This is the role
+    needed to receive from devices that only send on sessions they initiate,
+    such as an iPad's MIDI Network session.
+    """
+
+    def __init__(self, output, session_name: str, control_port: int | None = None,
+                 verbose: bool = False, advertise: bool = True) -> None:
+        self.output = output
+        self.session_name = session_name
+        self.control_port = control_port
+        self.verbose = verbose
+        self.advertise = advertise
+        self.ssrc = random.getrandbits(32)
+        self._running = False
+        self._control: socket.socket | None = None
+        self._data: socket.socket | None = None
+        self._threads: list[threading.Thread] = []
+        self._advertiser: MdnsAdvertiser | None = None
+        self._peers: dict[tuple[str, int], str] = {}
+
+    def _open(self) -> None:
+        self._control, self._data = _bind_udp_pair(self.control_port)
+        self.control_port = self._control.getsockname()[1]
+
+    def _peer_name(self, address: tuple[str, int], is_data: bool) -> str:
+        port = address[1] - 1 if is_data else address[1]
+        return self._peers.get((address[0], port), address[0])
+
+    def _control_loop(self) -> None:
+        assert self._control is not None
+        while self._running:
+            try:
+                packet, address = self._control.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            command = apple_command(packet)
+            if command == CMD_INVITATION:
+                parsed = parse_session(packet)
+                if parsed is None:
+                    continue
+                _c, _v, token, ssrc, name = parsed
+                self._peers[(address[0], address[1])] = name or address[0]
+                self._control.sendto(
+                    session_packet(CMD_ACCEPT, token, self.ssrc, self.session_name), address)
+                log(f"{name or address[0]}: control session accepted")
+            elif command == CMD_BYE:
+                self._peers.pop((address[0], address[1]), None)
+                log(f"{self._peer_name(address, False)}: session ended (BY)")
+
+    def _data_loop(self) -> None:
+        assert self._data is not None
+        while self._running:
+            try:
+                packet, address = self._data.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            command = apple_command(packet)
+            if command == CMD_INVITATION:
+                parsed = parse_session(packet)
+                if parsed is None:
+                    continue
+                _c, _v, token, _ssrc, name = parsed
+                self._data.sendto(
+                    session_packet(CMD_ACCEPT, token, self.ssrc, self.session_name), address)
+                log(f"{name or address[0]}: data session accepted")
+            elif command == CMD_CLOCK_SYNC:
+                parsed = parse_clock_sync(packet)
+                if parsed is not None and parsed[1] == 0:
+                    _s, _count, t1, _t2, _t3 = parsed
+                    reply = clock_sync_reply(self.ssrc, t1, int(time.perf_counter() * 10000))
+                    try:
+                        self._data.sendto(reply, address)
+                    except OSError:
+                        pass
+            elif command == CMD_BYE:
+                self._peers.pop((address[0], address[1] - 1), None)
+            else:
+                self._on_midi(packet, address)
+
+    def _on_midi(self, packet: bytes, address: tuple[str, int]) -> None:
+        for raw in parse_rtp_midi(packet):
+            try:
+                message = mido.Message.from_bytes(list(raw))
+            except (ValueError, IndexError):
+                if self.verbose:
+                    log(f"unparsable MIDI: {raw.hex(' ')}")
+                continue
+            try:
+                self.output.send(message)
+            except Exception as exc:
+                log(f"MIDI output error: {exc}")
+                return
+            if self.verbose:
+                log(f"{self._peer_name(address, True)}: {message}")
+
+    def run(self) -> None:
+        self._open()
+        self._running = True
+        if self.advertise:
+            self._advertiser = MdnsAdvertiser(self.session_name, self.control_port, self.verbose)
+            if self._advertiser.start():
+                log(f"advertising {self.session_name!r} via Bonjour on port {self.control_port}")
+        log(f"listening on control {self.control_port}, data {self.control_port + 1}")
+        for target, name in ((self._control_loop, "control"), (self._data_loop, "data")):
+            thread = threading.Thread(target=target, name=f"listener-{name}", daemon=True)
+            thread.start()
+            self._threads.append(thread)
+        try:
+            while self._running:
+                time.sleep(0.2)
+        except KeyboardInterrupt:
+            log("stopping ...")
+        finally:
+            self._shutdown()
+
+    def _shutdown(self) -> None:
+        self._running = False
+        if self._advertiser is not None:
+            self._advertiser.stop()
+        for sock in (self._control, self._data):
+            if sock is not None:
+                sock.close()
+        for thread in self._threads:
+            thread.join(timeout=1)
+        try:
+            self.output.close()
+        except Exception:
+            pass
+
+
 # --------------------------------------------------------------------------- #
 # Command line
 # --------------------------------------------------------------------------- #
@@ -1011,7 +1348,8 @@ def build_parser() -> argparse.ArgumentParser:
                "  applemidi2midi.py --list\n"
                "  applemidi2midi.py --scan\n"
                "  applemidi2midi.py --to \"loopMIDI Port\"\n"
-               "  applemidi2midi.py --host 192.168.1.50:5006 --to \"X390\"\n",
+               "  applemidi2midi.py --host 192.168.1.50:5006 --to \"X390\"\n"
+               "  applemidi2midi.py --listen --to \"loopMIDI Port\"\n",
     )
     parser.add_argument("--list", action="store_true", help="list local MIDI output ports and exit")
     parser.add_argument("--scan", action="store_true", help="scan for devices, list them and exit")
@@ -1019,7 +1357,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", metavar="HOST[:PORT]", help="connect to this device instead of discovering")
     parser.add_argument("--device", metavar="NAME", action="append",
                         help="only connect to discovered sessions whose name contains NAME (repeatable)")
-    parser.add_argument("--port", type=int, default=5004, help="control port for --host (default 5004)")
+    parser.add_argument("--listen", action="store_true",
+                        help="act as a listener: advertise via Bonjour and let devices connect to us")
+    parser.add_argument("--no-bonjour", action="store_true",
+                        help="with --listen, do not advertise via Bonjour (connect by IP)")
+    parser.add_argument("--port", type=int, default=5004,
+                        help="control port (--host connect port or --listen bind port, default 5004)")
     parser.add_argument("--name", default="RTP-MIDI Bridge", help="session name shown on the device")
     parser.add_argument("--discover", type=float, default=4.0, help="seconds to scan for --scan (default 4)")
     parser.add_argument("--allow-local", action="store_true",
@@ -1035,6 +1378,10 @@ def main(argv: list[str] | None = None) -> int:
         print("--host and --device are mutually exclusive", file=sys.stderr)
         return 2
 
+    if args.listen and (args.host or args.device):
+        print("--listen cannot be combined with --host or --device", file=sys.stderr)
+        return 2
+
     if args.scan:
         run_scan(args.discover)
         return 0
@@ -1046,6 +1393,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         for name in list_outputs():
             print(name)
+        return 0
+
+    if args.listen:
+        output_name = choose_output(args.to)
+        output = mido.open_output(output_name)
+        log(f"forwarding to MIDI output: {output_name!r}")
+        Listener(output, args.name, control_port=args.port, verbose=args.verbose,
+                 advertise=not args.no_bonjour).run()
         return 0
 
     output_name = choose_output(args.to)
