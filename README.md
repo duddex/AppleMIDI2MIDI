@@ -35,7 +35,7 @@ python applemidi2midi.py --host 192.168.1.50:5006  # non-default session port
 If `--to` is omitted and more than one output exists, the bridge prints a list
 and asks which one to use. The bridge forwards to a normal MIDI output port
 (a loopMIDI port, a hardware synth, ...); enabling that port as an input in your
-DAW gives you the tablet's MIDI, with no virtual rtpMIDI port involved.
+DAW gives you the device's MIDI, with no virtual rtpMIDI port involved.
 
 Options:
 
