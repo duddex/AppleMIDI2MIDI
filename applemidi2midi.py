@@ -1354,7 +1354,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list", action="store_true", help="list local MIDI output ports and exit")
     parser.add_argument("--scan", action="store_true", help="scan for devices, list them and exit")
     parser.add_argument("--to", metavar="NAME", help="local MIDI output (name substring)")
-    parser.add_argument("--host", metavar="HOST[:PORT]", help="connect to this device instead of discovering")
+    parser.add_argument("--host", metavar="HOST[:PORT]", action="append",
+                        help="connect to this device instead of discovering (repeatable)")
     parser.add_argument("--device", metavar="NAME", action="append",
                         help="only connect to discovered sessions whose name contains NAME (repeatable)")
     parser.add_argument("--listen", action="store_true",
@@ -1408,10 +1409,10 @@ def main(argv: list[str] | None = None) -> int:
     log(f"forwarding to MIDI output: {output_name!r}")
 
     discovery: MdnsDiscovery | None = None
+    manual_hosts: list[tuple[str, int]] = []
     if args.host:
-        host, port = parse_host(args.host, args.port)
+        manual_hosts = [parse_host(value, args.port) for value in args.host]
     else:
-        host = port = None
         discovery = MdnsDiscovery(verbose=args.verbose)
         discovery.start()
         log("discovering AppleMIDI sessions ...")
@@ -1419,7 +1420,7 @@ def main(argv: list[str] | None = None) -> int:
     bridge = Bridge(output, args.name, verbose=args.verbose, allow_local=args.allow_local,
                     devices=args.device)
     try:
-        if host is not None:
+        for host, port in manual_hosts:
             bridge.add_manual_peer(host, port)
         bridge.run(discovery)
     finally:

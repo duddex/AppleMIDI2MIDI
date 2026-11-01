@@ -34,6 +34,7 @@ python applemidi2midi.py --to "loopMIDI Port"      # discover, connect, forward
 python applemidi2midi.py --device "Moto G Play"    # only one discovered device
 python applemidi2midi.py --host 192.168.1.50       # skip discovery
 python applemidi2midi.py --host 192.168.1.50:5006  # non-default session port
+python applemidi2midi.py --host 192.168.1.50 --host 192.168.1.51  # two devices by IP
 python applemidi2midi.py --listen --to "loopMIDI Port"   # let devices connect to us
 ```
 
@@ -49,7 +50,7 @@ Options:
 | `--list` | list local MIDI output ports and exit |
 | `--scan` | scan for AppleMIDI sessions, list them and exit |
 | `--to NAME` | local MIDI output to forward to (case-insensitive substring) |
-| `--host HOST[:PORT]` | connect straight to a device, skipping mDNS |
+| `--host HOST[:PORT]` | connect straight to a device, skipping mDNS (repeatable) |
 | `--device NAME` | only connect to discovered sessions whose name contains NAME (repeatable) |
 | `--listen` | advertise via Bonjour and let devices connect to us (responder role) |
 | `--no-bonjour` | with `--listen`, do not advertise (connect by IP) |
