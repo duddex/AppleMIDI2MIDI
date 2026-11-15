@@ -85,6 +85,25 @@ advertise over Bonjour but do not answer the discovery query), add it by IP;
 python applemidi2midi.py --host 192.168.1.50 --host 192.168.1.51 --to "loopMIDI Port"
 ```
 
+### VCV Rack
+
+VCV Rack has no network MIDI: its MIDI modules read the MIDI inputs of the
+operating system (WinMM on Windows, CoreMIDI on macOS, ALSA/JACK on Linux). The
+bridge cannot create such an input, so it needs a virtual port to forward into:
+
+1. Create a loopMIDI port on Windows (on macOS, enable an IAC bus in *Audio MIDI
+   Setup*).
+2. Start the bridge with `--to "loopMIDI Port"`.
+3. In Rack, select that port as the device of every MIDI module that should
+   receive Faderling — in the [demo patch](https://github.com/duddex/faderling#demo-patch-for-vcv-rack),
+   the three *MIDI-CC to CV* modules.
+
+CCs, notes and channels pass through unchanged, and several devices still merge
+into the one port. Rack re-enumerates the MIDI devices whenever the device menu
+is opened, so a port created after Rack has started usually appears without a
+restart. An rtpMIDI session port works in Rack as well; the point of the bridge
+is that you no longer need the driver.
+
 ## Background
 
 ### RTP-MIDI (RFC 6295)
