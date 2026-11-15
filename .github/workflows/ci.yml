@@ -16,7 +16,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # ubuntu-latest is Ubuntu 26.04, for which no prebuilt Python 3.8
+          # exists; keep this leg on 24.04 while 3.8 support is claimed.
+          - os: ubuntu-24.04
             python: "3.8"
           - os: ubuntu-latest
             python: "3.10"
